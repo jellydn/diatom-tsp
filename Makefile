@@ -87,6 +87,12 @@ ifeq ($(PORT),brick)
   LDFLAGS += $(shell $(PKG_CONFIG) --libs sdl2) -lm -ldl -lpthread
 endif
 
+ifeq ($(PORT),smartpro)
+  PKG_CONFIG ?= pkg-config
+  CFLAGS  += $(shell $(PKG_CONFIG) --cflags sdl2 alsa)
+  LDFLAGS += $(shell $(PKG_CONFIG) --libs sdl2 alsa) -lm -ldl -lpthread
+endif
+
 ifeq ($(PORT),pixel2)
   # GKD Pixel 2. Built inside plastron's Buildroot, which sets CC and puts a
   # pkg-config on PATH that answers for the device system's own
@@ -199,6 +205,21 @@ PORT_TEST := $(BUILD)/port-test
 
 check-port: $(PORT_TEST)
 	@./$(PORT_TEST)
+
+# This checks the Smart Pro port directly with real SDL virtual joystick events.
+.PHONY: check-smartpro
+check-smartpro:
+	@mkdir -p build/smartpro
+	$(CC) -std=gnu11 -Wall -Wextra -Wno-unused-parameter -O1 -g \
+	      -Iinclude -Isrc -Iport -o build/smartpro/input-test \
+	      test/smartpro_input.c port/smartpro.c \
+	      $(shell pkg-config --cflags --libs sdl2 alsa) -lpthread -lm
+	@./build/smartpro/input-test
+
+.PHONY: check-smartpro-session
+check-smartpro-session:
+	$(MAKE) PORT=smartpro all stub
+	xvfb-run -a -s '-screen 0 1280x720x24' python3 test/smartpro_session.py
 
 $(PORT_TEST): test/port_test.c port/desktop.c port/port_clock.h include/diatom_port.h
 	@mkdir -p $(BUILD)

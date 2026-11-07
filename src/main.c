@@ -1433,6 +1433,8 @@ static int run_session_inner(const diatom_session *sn)
 		                                          (double)g_present_frames
 		                                        : FAST_PRESENT_GUESS_US);
 		int ran = 0;
+		bool menu_tapped = false;
+		int speed_steps = 0;
 
 		g_frame_fresh = false;
 		g_audio_fast = fast;
@@ -1474,6 +1476,34 @@ static int run_session_inner(const diatom_session *sn)
 			 * here, and not over a socket at 10Hz. Every frame the game runs,
 			 * fast or not. */
 			diatom_cheevos_frame();
+
+			/* Poll edges belong to each emulated frame, not only the last
+			 * presented frame in a fast batch. Defer pause until after it. */
+			bool level_key_active = diatom_levels_frame();
+			buttons = diatom_port_input_state();
+			idle_note_input(buttons != 0);
+			held_at_entry &= buttons;
+			if (buttons & DIATOM_BIT(DIATOM_BTN_MENU)) chord_hold = DIATOM_BIT(DIATOM_BTN_R1);
+			else                                       chord_hold &= buttons;
+			diatom_env_suppress(held_at_entry | chord_hold);
+			uint32_t pressed = buttons & ~prev_buttons;
+			if (pressed & DIATOM_BIT(DIATOM_BTN_MENU)) {
+				menu_armed = true;
+				menu_chorded = false;
+			}
+			bool moved = levels_moved();
+			if ((moved || level_key_active) && ((buttons | prev_buttons) & DIATOM_BIT(DIATOM_BTN_MENU)))
+				menu_chorded = true;
+			if ((buttons & DIATOM_BIT(DIATOM_BTN_MENU)) &&
+			    (pressed & DIATOM_BIT(DIATOM_BTN_R1))) {
+				speed_steps++;
+				menu_chorded = true;
+			}
+			if ((prev_buttons & ~buttons) & DIATOM_BIT(DIATOM_BTN_MENU)) {
+				if (menu_armed && !menu_chorded) menu_tapped = true;
+				menu_armed = false;
+			}
+			prev_buttons = buttons;
 
 			/* A running average, an eighth new, of each kind. The first one
 			 * measured seeds both, so the first fast turn has a figure. */
@@ -1621,62 +1651,20 @@ static int run_session_inner(const diatom_session *sn)
 			}
 		}
 
-		/* The level keys, stepped here from what the port reports, before the
-		 * tick that reports a move and the MENU chord check that reads one. */
-		diatom_levels_frame();
 		levels_tick();
 		audio_tick();
 
-		buttons = diatom_port_input_state();
-		idle_note_input(buttons != 0);
-
-		/* Latched at whichever entry point began these frames - game start or
-		 * menu resume - and narrowed here: a button the player has genuinely
-		 * let go of becomes the game's again on its next real press. Tested
-		 * against the raw pad state, so a button that is suppressed but still
-		 * physically down stays latched. */
-		held_at_entry &= buttons;
-
-		/* R1 belongs to MENU+R1 from the moment MENU is down - not from when
-		 * R1 is, so the frame R1 goes down cannot leak into the game - and
-		 * stays hidden after MENU is let go, until R1 is too. */
-		if (buttons & DIATOM_BIT(DIATOM_BTN_MENU)) chord_hold = DIATOM_BIT(DIATOM_BTN_R1);
-		else                                       chord_hold &= buttons;
-
-		/* The single writer. Every reason to hide a button from the core is
-		 * composed here, so no reason can clear another. */
-		diatom_env_suppress(held_at_entry | chord_hold);
-
-		/* MENU+R1 steps the speed. MENU is a modifier, so it is armed by its
-		 * press and acts on its RELEASE. */
-		{
-			uint32_t pressed = buttons & ~prev_buttons;
-
-			if (pressed & DIATOM_BIT(DIATOM_BTN_MENU)) {
-				menu_armed = true;
-				menu_chorded = false;
-			}
-			/* A level that moves while MENU is held made MENU a modifier
-			 * too: the Pixel 2's brightness is MENU plus the volume keys,
-			 * and letting go of MENU afterwards must not open the menu.
-			 * Read every frame so `levels_moved` stays current. */
-			if (levels_moved() && (buttons & DIATOM_BIT(DIATOM_BTN_MENU)))
-				menu_chorded = true;
-
-			if ((buttons & DIATOM_BIT(DIATOM_BTN_MENU)) &&
-			    (pressed & DIATOM_BIT(DIATOM_BTN_R1))) {
-				step_report(g_speed, step_frames, step_periods,
-				            diatom_port_now_us() - step_t0,
-				            diatom_audio_dropped() - step_drop0);
-				g_speed = g_speed % SPEED_MAX + 1;
-				menu_chorded = true;
-				printf("diatom: speed %dx\n", g_speed);
-				fflush(stdout);
-				speed_emit();
-				step_frames = step_periods = 0;
-				step_t0 = diatom_port_now_us();
-				step_drop0 = diatom_audio_dropped();
-			}
+		while (speed_steps-- > 0) {
+			step_report(g_speed, step_frames, step_periods,
+			            diatom_port_now_us() - step_t0,
+			            diatom_audio_dropped() - step_drop0);
+			g_speed = g_speed % SPEED_MAX + 1;
+			printf("diatom: speed %dx\n", g_speed);
+			fflush(stdout);
+			speed_emit();
+			step_frames = step_periods = 0;
+			step_t0 = diatom_port_now_us();
+			step_drop0 = diatom_audio_dropped();
 		}
 
 		/* MENU is Diatom's own key and the ports no longer act on it, because
@@ -1684,9 +1672,7 @@ static int run_session_inner(const diatom_session *sn)
 		 * the launcher it opens the launcher's menu. On release, and only for a
 		 * press this loop saw, unless that press became a chord: a MENU still
 		 * held when a menu resumes the game was not pressed here. */
-		if ((menu_armed && !menu_chorded &&
-		     ((prev_buttons & ~buttons) & DIATOM_BIT(DIATOM_BTN_MENU))) ||
-		    take_pause_request()) {
+		if (menu_tapped || take_pause_request()) {
 			menu_armed = false;
 			if (!diatom_proto_active()) {
 				stop = true;
@@ -1764,8 +1750,6 @@ static int run_session_inner(const diatom_session *sn)
 				}
 			}
 		}
-		prev_buttons = buttons;
-
 		{
 			size_t q = diatom_port_audio_queued();
 			if (q < q_min) q_min = q;

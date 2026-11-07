@@ -25,7 +25,8 @@ bool diatom_levels_get(diatom_level_kind kind, int *index, int *count);
 bool diatom_levels_set(diatom_level_kind kind, int index, int count);
 
 /* Once a frame: a level key's press steps its level, and holding it repeats at
- * the launcher's pace. */
-void diatom_levels_frame(void);
+ * the launcher's pace. True when a level key was active, including endpoints:
+ * MENU was still a modifier even when the position could not move. */
+bool diatom_levels_frame(void);
 
 #endif /* DIATOM_LEVELS_H */

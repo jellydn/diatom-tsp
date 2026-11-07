@@ -95,7 +95,7 @@ static const struct {
 
 static uint64_t g_next_us[LEVEL_KEYS];   /* when a held key next repeats; 0 is not held */
 
-void diatom_levels_frame(void)
+bool diatom_levels_frame(void)
 {
 	uint32_t held = diatom_port_level_keys();
 	uint64_t now = 0;
@@ -116,4 +116,5 @@ void diatom_levels_frame(void)
 		}
 		step(level_keys[i].kind, level_keys[i].dir);
 	}
+	return held != 0;
 }
